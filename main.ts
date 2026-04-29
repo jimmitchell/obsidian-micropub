@@ -327,24 +327,57 @@ export default class MicropubPlugin extends Plugin {
     return text.slice(0, 200);
   }
 
+  /**
+   * Fallback file resolver: matches a linktext against any file in the vault.
+   * Tries (in order): exact full path; basename with extension; basename
+   * without extension. Returns the first match. Case-insensitive.
+   */
+  private findFileByLinktext(linktext: string): TFile | null {
+    const needle = linktext.replace(/^\/+/, "").toLowerCase();
+    if (needle === "") return null;
+    const files = this.app.vault.getFiles();
+    let basenameNoExt: TFile | null = null;
+    for (const f of files) {
+      if (f.path.toLowerCase() === needle) return f;
+      if (f.name.toLowerCase() === needle) return f;
+      if (!basenameNoExt && f.basename.toLowerCase() === needle) {
+        basenameNoExt = f;
+      }
+    }
+    return basenameNoExt;
+  }
+
   private async rewriteEmbeds(
     body: string,
     sourceFile: TFile,
     endpoint: string,
   ): Promise<string> {
     const cache = new Map<string, string>();
+    const skipped: Array<{ linktext: string; reason: string }> = [];
 
     const uploadByPath = async (linktext: string): Promise<string | null> => {
       if (!isLocalPath(linktext)) return null;
       const cached = cache.get(linktext);
       if (cached !== undefined) return cached;
 
-      const target = this.app.metadataCache.getFirstLinkpathDest(
-        decodeURI(linktext),
+      const decoded = decodeURI(linktext);
+      let target: TFile | null = this.app.metadataCache.getFirstLinkpathDest(
+        decoded,
         sourceFile.path,
       );
-      if (!target) return null;
+      if (!target) target = this.findFileByLinktext(decoded);
+      if (!target) {
+        skipped.push({
+          linktext,
+          reason: "no matching file in vault (check path/spelling)",
+        });
+        return null;
+      }
       if (!/\.(png|jpe?g|gif|webp|svg|avif)$/i.test(target.extension)) {
+        skipped.push({
+          linktext,
+          reason: `unsupported type .${target.extension}`,
+        });
         return null;
       }
 
@@ -379,6 +412,15 @@ export default class MicropubPlugin extends Plugin {
       const url = await uploadByPath(src);
       return url ? full.replace(src, url) : full;
     });
+
+    if (skipped.length > 0) {
+      const list = skipped
+        .map((s) => `  • ${s.linktext} — ${s.reason}`)
+        .join("\n");
+      throw new Error(
+        `${skipped.length} image embed${skipped.length === 1 ? "" : "s"} could not be uploaded — refusing to publish:\n${list}`,
+      );
+    }
 
     return body;
   }
