@@ -373,7 +373,7 @@ export default class MicropubPlugin extends Plugin {
         });
         return null;
       }
-      if (!/\.(png|jpe?g|gif|webp|svg|avif)$/i.test(target.extension)) {
+      if (!/^(png|jpe?g|gif|webp|svg|avif)$/i.test(target.extension)) {
         skipped.push({
           linktext,
           reason: `unsupported type .${target.extension}`,
@@ -452,7 +452,7 @@ export default class MicropubPlugin extends Plugin {
   ): Promise<string> {
     const boundary =
       "----ObsidianMicropub" + Math.random().toString(16).slice(2);
-    const body = buildMultipart(boundary, "photo", filename, data, mime);
+    const body = buildMultipart(boundary, "file", filename, data, mime);
 
     const params: RequestUrlParam = {
       url: endpoint,
@@ -498,7 +498,7 @@ function buildMultipart(
   const enc = new TextEncoder();
   const head = enc.encode(
     `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="${fieldName}[]"; filename="${filename.replace(/"/g, "")}"\r\n` +
+      `Content-Disposition: form-data; name="${fieldName}"; filename="${filename.replace(/"/g, "")}"\r\n` +
       `Content-Type: ${mime}\r\n\r\n`,
   );
   const tail = enc.encode(`\r\n--${boundary}--\r\n`);
