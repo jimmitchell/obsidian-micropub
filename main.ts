@@ -12,14 +12,22 @@ import {
   normalizePath,
 } from "obsidian";
 
+interface MediaCacheEntry {
+  size: number;
+  mtime: number;
+  url: string;
+}
+
 interface MicropubSettings {
   endpoint: string;
   token: string;
+  mediaCache: Record<string, MediaCacheEntry>;
 }
 
 const DEFAULT_SETTINGS: MicropubSettings = {
   endpoint: "",
   token: "",
+  mediaCache: {},
 };
 
 interface Frontmatter {
@@ -353,10 +361,12 @@ export default class MicropubPlugin extends Plugin {
     endpoint: string,
   ): Promise<string> {
     const cache = new Map<string, string>();
+    const uploadedUrls = new Set<string>();
     const skipped: Array<{ linktext: string; reason: string }> = [];
 
     const uploadByPath = async (linktext: string): Promise<string | null> => {
       if (!isLocalPath(linktext)) return null;
+      if (uploadedUrls.has(linktext)) return null;
       const cached = cache.get(linktext);
       if (cached !== undefined) return cached;
 
@@ -381,6 +391,19 @@ export default class MicropubPlugin extends Plugin {
         return null;
       }
 
+      const cacheKey  = target.path;
+      const stat      = target.stat;
+      const cachedHit = this.settings.mediaCache[cacheKey];
+      if (
+        cachedHit &&
+        cachedHit.size === stat.size &&
+        cachedHit.mtime === stat.mtime
+      ) {
+        cache.set(linktext, cachedHit.url);
+        uploadedUrls.add(cachedHit.url);
+        return cachedHit.url;
+      }
+
       const data = await this.app.vault.readBinary(target);
       const url = await this.uploadMedia(
         endpoint,
@@ -389,6 +412,13 @@ export default class MicropubPlugin extends Plugin {
         mimeFor(target.extension),
       );
       cache.set(linktext, url);
+      uploadedUrls.add(url);
+      this.settings.mediaCache[cacheKey] = {
+        size: stat.size,
+        mtime: stat.mtime,
+        url,
+      };
+      await this.saveSettings();
       return url;
     };
 
@@ -577,6 +607,22 @@ class MicropubSettingTab extends PluginSettingTab {
           } catch (e) {
             new Notice(`Micropub test error: ${String(e)}`, 6000);
           }
+        }),
+      );
+
+    const cacheCount = Object.keys(this.plugin.settings.mediaCache).length;
+    new Setting(containerEl)
+      .setName("Media upload cache")
+      .setDesc(
+        `${cacheCount} entr${cacheCount === 1 ? "y" : "ies"} cached. ` +
+          "Vault files that haven't changed (same size and mtime) reuse their previously uploaded URL instead of re-uploading.",
+      )
+      .addButton((b) =>
+        b.setButtonText("Clear cache").onClick(async () => {
+          this.plugin.settings.mediaCache = {};
+          await this.plugin.saveSettings();
+          new Notice("Micropub: media cache cleared");
+          this.display();
         }),
       );
 

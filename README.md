@@ -53,7 +53,18 @@ Note body here. ![[diagram.png]] is uploaded and rewritten.
 
 On success, the response `Location` URL is written back to the note as `url:` in frontmatter.
 
-## Limitations (v0.2)
+## Media upload cache
+
+To avoid re-uploading the same image on every publish, the plugin caches each successful upload's resulting URL keyed on the vault file's path, size, and modification time. On subsequent publishes, an unchanged attachment is rewritten to its cached URL without hitting the endpoint.
+
+The cache lives in plugin settings and persists across Obsidian restarts. Manage it under **Settings → Micropub Publisher → Media upload cache**:
+
+- The current entry count is shown in the setting description.
+- **Clear cache** — drops all cached URLs. Use this if the server-side media is deleted or moved, or if you've changed endpoints.
+
+A file is considered "changed" if its size or mtime differs from the cached values; editing an image in place will trigger a fresh upload.
+
+## Limitations (v0.3)
 
 - IndieAuth flow is not supported — only static bearer tokens.
 - Photos are posted to the main endpoint as `photo[]`. If your server exposes a distinct `media-endpoint` via `q=config`, the plugin doesn't yet route to it.
