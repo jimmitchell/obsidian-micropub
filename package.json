@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-micropub",
+  "version": "0.2.0",
+  "description": "Publish notes to a Micropub-enabled site from Obsidian.",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": ["obsidian", "micropub", "indieweb"],
+  "author": "Jim Mitchell",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "builtin-modules": "^3.3.0",
+    "esbuild": "^0.21.0",
+    "obsidian": "latest",
+    "typescript": "^5.4.0"
+  }
+}

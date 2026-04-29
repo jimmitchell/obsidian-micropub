@@ -1,0 +1,10 @@
+{
+  "id": "obsidian-micropub",
+  "name": "Micropub Publisher",
+  "version": "0.2.0",
+  "minAppVersion": "1.4.0",
+  "description": "Publish the current note to a Micropub-enabled site (h-entry, with image upload from embedded attachments).",
+  "author": "Jim Mitchell",
+  "authorUrl": "https://jimmitchell.org",
+  "isDesktopOnly": false
+}
