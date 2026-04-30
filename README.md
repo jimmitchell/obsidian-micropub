@@ -29,11 +29,12 @@ Open **Settings → Micropub Publisher**:
 
 ## Use
 
-Three commands:
+Two commands:
 
-- **Publish or update current note (published)** — creates a new post if no `url:` is in frontmatter; otherwise sends a Micropub `update` against that URL.
-- **Publish or update current note as draft** — same routing, but sets `post-status: draft`.
+- **Publish or update current note** — creates a new post if no `url:` is in frontmatter; otherwise sends a Micropub `update` against that URL. Draft vs published is driven by frontmatter `status:` — set `status: draft` to send `post-status: draft`; anything else (or absent) publishes.
 - **Delete published post** — sends a Micropub `delete` against the `url:` in frontmatter, then removes `url:` from the note (so a subsequent publish creates a fresh post).
+
+To flip a draft to published (or vice versa), edit `status:` in frontmatter and re-run the publish command — on updates, `post-status` is sent in `replace`, so the server-side state follows the note.
 
 On update the post's original publish date is preserved — `published:` in frontmatter is honored only for new posts.
 
@@ -77,7 +78,7 @@ The cache lives in plugin settings and persists across Obsidian restarts. Manage
 
 A file is considered "changed" if its size or mtime differs from the cached values; editing an image in place will trigger a fresh upload.
 
-## Limitations (v0.4)
+## Limitations (v0.5)
 
 - IndieAuth flow is not supported — only static bearer tokens.
 - Photos are posted to the main endpoint as `photo[]`. If your server exposes a distinct `media-endpoint` via `q=config`, the plugin doesn't yet route to it.

@@ -126,14 +126,8 @@ export default class MicropubPlugin extends Plugin {
 
     this.addCommand({
       id: "micropub-publish",
-      name: "Publish or update current note (published)",
-      callback: () => this.publishActive("published"),
-    });
-
-    this.addCommand({
-      id: "micropub-save-draft",
-      name: "Publish or update current note as draft",
-      callback: () => this.publishActive("draft"),
+      name: "Publish or update current note",
+      callback: () => this.publishActive(),
     });
 
     this.addCommand({
@@ -159,7 +153,7 @@ export default class MicropubPlugin extends Plugin {
     return ep.replace(/\/+$/, "");
   }
 
-  private async publishActive(statusOverride?: "draft" | "published") {
+  private async publishActive() {
     const file = this.app.workspace.getActiveFile();
     if (!file) {
       new Notice("Micropub: no active note");
@@ -180,7 +174,7 @@ export default class MicropubPlugin extends Plugin {
     }
 
     try {
-      await this.publishFile(file, endpoint, statusOverride);
+      await this.publishFile(file, endpoint);
     } catch (err) {
       console.error("Micropub publish failed", err);
       const msg = err instanceof Error ? err.message : String(err);
@@ -188,11 +182,7 @@ export default class MicropubPlugin extends Plugin {
     }
   }
 
-  private async publishFile(
-    file: TFile,
-    endpoint: string,
-    statusOverride?: "draft" | "published",
-  ) {
+  private async publishFile(file: TFile, endpoint: string) {
     const raw = await this.app.vault.read(file);
     const parsed = parseNote(raw);
     const fm = parsed.frontmatter;
@@ -202,7 +192,8 @@ export default class MicropubPlugin extends Plugin {
 
     const isUpdate = typeof fm.url === "string" && fm.url.trim() !== "";
 
-    const status = statusOverride ?? fm.status;
+    const status: "draft" | "published" =
+      fm.status === "draft" ? "draft" : "published";
     const cats = Array.isArray(fm.categories)
       ? fm.categories.map((c) => String(c).trim()).filter((c) => c !== "")
       : [];
@@ -218,9 +209,7 @@ export default class MicropubPlugin extends Plugin {
         replace["mp-slug"] = [fm.slug];
       }
       replace.category = cats;
-      if (status === "draft" || status === "published") {
-        replace["post-status"] = [status];
-      }
+      replace["post-status"] = [status];
       for (const prop of RESPONSE_PROPS) {
         const urls = asUrlList(fm[prop]);
         if (urls.length > 0) replace[prop] = urls;
