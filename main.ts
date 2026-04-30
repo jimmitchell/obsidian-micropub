@@ -37,7 +37,32 @@ interface Frontmatter {
   status?: "draft" | "published";
   published?: string;
   url?: string;
+  "in-reply-to"?: string | string[];
+  "like-of"?: string | string[];
+  "repost-of"?: string | string[];
+  "bookmark-of"?: string | string[];
   [key: string]: unknown;
+}
+
+const RESPONSE_PROPS = [
+  "in-reply-to",
+  "like-of",
+  "repost-of",
+  "bookmark-of",
+] as const;
+
+function asUrlList(v: unknown): string[] {
+  if (typeof v === "string") {
+    const s = v.trim();
+    return s === "" ? [] : [s];
+  }
+  if (Array.isArray(v)) {
+    return v
+      .filter((x): x is string => typeof x === "string")
+      .map((x) => x.trim())
+      .filter((x) => x !== "");
+  }
+  return [];
 }
 
 interface ParsedNote {
@@ -196,6 +221,10 @@ export default class MicropubPlugin extends Plugin {
       if (status === "draft" || status === "published") {
         replace["post-status"] = [status];
       }
+      for (const prop of RESPONSE_PROPS) {
+        const urls = asUrlList(fm[prop]);
+        if (urls.length > 0) replace[prop] = urls;
+      }
       payload = { action: "update", url: fm.url, replace };
     } else {
       const properties: Record<string, unknown[]> = { content: [body] };
@@ -210,6 +239,10 @@ export default class MicropubPlugin extends Plugin {
       }
       if (cats.length > 0) properties.category = cats;
       if (status === "draft") properties["post-status"] = ["draft"];
+      for (const prop of RESPONSE_PROPS) {
+        const urls = asUrlList(fm[prop]);
+        if (urls.length > 0) properties[prop] = urls;
+      }
       payload = { type: ["h-entry"], properties };
     }
 
@@ -630,7 +663,8 @@ class MicropubSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
     note.setText(
-      "Frontmatter keys: title, slug, categories (list), status (draft|published), published (ISO date). " +
+      "Frontmatter keys: title, slug, categories (list), status (draft|published), published (ISO date), " +
+        "in-reply-to / like-of / repost-of / bookmark-of (URL or list of URLs for IndieWeb response posts). " +
         "Embedded images (![[…]] or ![](relative/path)) are uploaded to the media endpoint and rewritten before posting. " +
         "On success, the new post URL is written back to the note as `url:` in frontmatter.",
     );

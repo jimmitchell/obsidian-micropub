@@ -51,6 +51,19 @@ published: 2026-04-28T10:00:00-05:00   # optional, ISO 8601
 Note body here. ![[diagram.png]] is uploaded and rewritten.
 ```
 
+### IndieWeb response posts
+
+Add one of these frontmatter keys to publish a reply, like, repost, or bookmark instead of a plain note. Each accepts a single URL or a list of URLs:
+
+```yaml
+---
+in-reply-to: https://example.com/their-post
+# or: like-of, repost-of, bookmark-of
+---
+```
+
+On the wire these become `properties.in-reply-to` (etc.) on create, and are also included in `replace` on update if still present in frontmatter.
+
 On success, the response `Location` URL is written back to the note as `url:` in frontmatter.
 
 ## Media upload cache
@@ -64,7 +77,7 @@ The cache lives in plugin settings and persists across Obsidian restarts. Manage
 
 A file is considered "changed" if its size or mtime differs from the cached values; editing an image in place will trigger a fresh upload.
 
-## Limitations (v0.3)
+## Limitations (v0.4)
 
 - IndieAuth flow is not supported — only static bearer tokens.
 - Photos are posted to the main endpoint as `photo[]`. If your server exposes a distinct `media-endpoint` via `q=config`, the plugin doesn't yet route to it.
