@@ -1,5 +1,6 @@
 import {
   App,
+  Modal,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -21,18 +22,21 @@ interface MediaCacheEntry {
 interface MicropubSettings {
   endpoint: string;
   token: string;
+  pullFolder: string;
   mediaCache: Record<string, MediaCacheEntry>;
 }
 
 const DEFAULT_SETTINGS: MicropubSettings = {
   endpoint: "",
   token: "",
+  pullFolder: "",
   mediaCache: {},
 };
 
 interface Frontmatter {
   title?: string;
   slug?: string;
+  summary?: string;
   categories?: string[];
   status?: "draft" | "published";
   published?: string;
@@ -42,6 +46,12 @@ interface Frontmatter {
   "repost-of"?: string | string[];
   "bookmark-of"?: string | string[];
   [key: string]: unknown;
+}
+
+function firstString(arr: unknown): string | undefined {
+  if (!Array.isArray(arr)) return undefined;
+  const v = arr[0];
+  return typeof v === "string" ? v : undefined;
 }
 
 const RESPONSE_PROPS = [
@@ -136,6 +146,12 @@ export default class MicropubPlugin extends Plugin {
       callback: () => this.deleteActive(),
     });
 
+    this.addCommand({
+      id: "micropub-pull",
+      name: "Pull post from server (refresh active note or pull by URL)",
+      callback: () => this.pullActive(),
+    });
+
     this.addSettingTab(new MicropubSettingTab(this.app, this));
   }
 
@@ -198,6 +214,9 @@ export default class MicropubPlugin extends Plugin {
       ? fm.categories.map((c) => String(c).trim()).filter((c) => c !== "")
       : [];
 
+    const summary =
+      typeof fm.summary === "string" ? fm.summary.trim() : "";
+
     let payload: Record<string, unknown>;
 
     if (isUpdate) {
@@ -214,7 +233,14 @@ export default class MicropubPlugin extends Plugin {
         const urls = asUrlList(fm[prop]);
         if (urls.length > 0) replace[prop] = urls;
       }
+      const deletes: string[] = [];
+      if (summary !== "") {
+        replace.summary = [summary];
+      } else {
+        deletes.push("summary");
+      }
       payload = { action: "update", url: fm.url, replace };
+      if (deletes.length > 0) payload.delete = deletes;
     } else {
       const properties: Record<string, unknown[]> = { content: [body] };
       if (typeof fm.title === "string" && fm.title.trim() !== "") {
@@ -223,6 +249,7 @@ export default class MicropubPlugin extends Plugin {
       if (typeof fm.slug === "string" && fm.slug.trim() !== "") {
         properties["mp-slug"] = [fm.slug];
       }
+      if (summary !== "") properties.summary = [summary];
       if (typeof fm.published === "string" && fm.published.trim() !== "") {
         properties.published = [fm.published];
       }
@@ -258,7 +285,7 @@ export default class MicropubPlugin extends Plugin {
       this.headerValue(res.headers, "Location") ||
       "";
 
-    if (!isUpdate && location) {
+    if (location && location !== fm.url) {
       fm.url = location;
       const updated = writeFrontmatter(raw, fm);
       if (updated !== raw) {
@@ -274,6 +301,148 @@ export default class MicropubPlugin extends Plugin {
         6000,
       );
     }
+  }
+
+  private async pullActive() {
+    const endpoint = this.endpointUrl();
+    if (!endpoint || !this.settings.token) {
+      new Notice("Micropub: set endpoint and token in settings");
+      return;
+    }
+
+    const active = this.app.workspace.getActiveFile();
+    let target: { file: TFile; raw: string; fm: Frontmatter } | null = null;
+    let url = "";
+
+    if (active && active.extension === "md") {
+      const raw = await this.app.vault.read(active);
+      const parsed = parseNote(raw);
+      const fmUrl =
+        typeof parsed.frontmatter.url === "string"
+          ? parsed.frontmatter.url.trim()
+          : "";
+      if (fmUrl !== "") {
+        target = { file: active, raw, fm: parsed.frontmatter };
+        url = fmUrl;
+      }
+    }
+
+    if (url === "") {
+      const entered = await new UrlPromptModal(
+        this.app,
+        "Pull post from URL",
+        "Paste the post URL to fetch its source from the server.",
+      ).openAndWait();
+      if (!entered) return;
+      url = entered;
+    }
+
+    try {
+      const props = await this.fetchSource(endpoint, url);
+      await this.applyPulledSource(props, url, target);
+    } catch (err) {
+      console.error("Micropub pull failed", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Micropub: ${msg}`, 8000);
+    }
+  }
+
+  private async fetchSource(
+    endpoint: string,
+    url: string,
+  ): Promise<Record<string, unknown[]>> {
+    const qs = new URLSearchParams({ q: "source", url });
+    const res = await requestUrl({
+      url: `${endpoint}?${qs.toString()}`,
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${this.settings.token}`,
+        Accept: "application/json",
+      },
+      throw: false,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      const detail = this.formatErrorBody(res.text);
+      throw new Error(`HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(res.text);
+    } catch {
+      throw new Error("source response was not JSON");
+    }
+    if (!json || typeof json !== "object") {
+      throw new Error("source response missing properties");
+    }
+    const props = (json as { properties?: unknown }).properties;
+    if (!props || typeof props !== "object") {
+      throw new Error("source response missing properties");
+    }
+    return props as Record<string, unknown[]>;
+  }
+
+  private async applyPulledSource(
+    props: Record<string, unknown[]>,
+    fallbackUrl: string,
+    target: { file: TFile; raw: string; fm: Frontmatter } | null,
+  ) {
+    const newFm: Frontmatter = target ? { ...target.fm } : {};
+
+    const name = firstString(props.name);
+    if (name !== undefined) newFm.title = name;
+    else delete newFm.title;
+
+    const slug = firstString(props["mp-slug"]);
+    if (slug !== undefined) newFm.slug = slug;
+    else delete newFm.slug;
+
+    const summary = firstString(props.summary);
+    if (summary !== undefined && summary !== "") newFm.summary = summary;
+    else delete newFm.summary;
+
+    const status = firstString(props["post-status"]);
+    if (status === "draft" || status === "published") newFm.status = status;
+    else delete newFm.status;
+
+    const published = firstString(props.published);
+    if (published !== undefined) newFm.published = published;
+    else delete newFm.published;
+
+    if (Array.isArray(props.category)) {
+      const cats = props.category
+        .filter((c): c is string => typeof c === "string")
+        .map((c) => c.trim())
+        .filter((c) => c !== "");
+      if (cats.length > 0) newFm.categories = cats;
+      else delete newFm.categories;
+    } else {
+      delete newFm.categories;
+    }
+
+    const serverUrl = firstString(props.url);
+    newFm.url = serverUrl && serverUrl !== "" ? serverUrl : fallbackUrl;
+
+    const body = firstString(props.content) ?? "";
+    const yaml = stringifyYaml(newFm).trimEnd();
+    const content = `---\n${yaml}\n---\n${body}`;
+
+    if (target) {
+      await this.app.vault.modify(target.file, content);
+      new Notice(`Pulled: ${newFm.url}`, 6000);
+      return;
+    }
+
+    const slugForName = (newFm.slug ?? "untitled").replace(/[\\/:]/g, "-");
+    const folder = this.settings.pullFolder.trim().replace(/^\/+|\/+$/g, "");
+    const path = normalizePath(
+      folder ? `${folder}/${slugForName}.md` : `${slugForName}.md`,
+    );
+    if (this.app.vault.getAbstractFileByPath(path)) {
+      throw new Error(`${path} already exists`);
+    }
+    const created = await this.app.vault.create(path, content);
+    await this.app.workspace.getLeaf().openFile(created);
+    new Notice(`Pulled to ${path}`, 6000);
   }
 
   private async deleteActive() {
@@ -540,6 +709,80 @@ export default class MicropubPlugin extends Plugin {
   }
 }
 
+class UrlPromptModal extends Modal {
+  private resolver: ((value: string | null) => void) | null = null;
+  private settled = false;
+  private input!: HTMLInputElement;
+
+  constructor(
+    app: App,
+    private heading: string,
+    private description: string,
+  ) {
+    super(app);
+  }
+
+  openAndWait(): Promise<string | null> {
+    return new Promise((resolve) => {
+      this.resolver = resolve;
+      this.open();
+    });
+  }
+
+  onOpen() {
+    const { contentEl, titleEl } = this;
+    titleEl.setText(this.heading);
+    contentEl.createEl("p", {
+      text: this.description,
+      cls: "setting-item-description",
+    });
+
+    this.input = contentEl.createEl("input", { type: "text" });
+    this.input.placeholder = "https://example.com/2026/05/11/my-slug/";
+    this.input.style.width = "100%";
+    this.input.style.marginBottom = "1em";
+
+    const buttons = contentEl.createDiv({ cls: "modal-button-container" });
+    const okBtn = buttons.createEl("button", {
+      text: "Pull",
+      cls: "mod-cta",
+    });
+    const cancelBtn = buttons.createEl("button", { text: "Cancel" });
+
+    const submit = () => {
+      const v = this.input.value.trim();
+      if (v === "") return;
+      this.settle(v);
+      this.close();
+    };
+    okBtn.addEventListener("click", submit);
+    cancelBtn.addEventListener("click", () => {
+      this.settle(null);
+      this.close();
+    });
+    this.input.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        submit();
+      }
+    });
+
+    setTimeout(() => this.input.focus(), 0);
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    this.settle(null);
+  }
+
+  private settle(value: string | null) {
+    if (this.settled) return;
+    this.settled = true;
+    this.resolver?.(value);
+    this.resolver = null;
+  }
+}
+
 function buildMultipart(
   boundary: string,
   fieldName: string,
@@ -602,6 +845,23 @@ class MicropubSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Pull destination folder")
+      .setDesc(
+        "Folder (relative to the vault root) where \"Pull post from server\" " +
+          "creates new notes when there's no active note linked by `url:`. " +
+          "Leave blank to create at the vault root. The note filename is the post's `mp-slug`.",
+      )
+      .addText((t) =>
+        t
+          .setPlaceholder("e.g. Posts or Inbox/From server")
+          .setValue(this.plugin.settings.pullFolder)
+          .onChange(async (v) => {
+            this.plugin.settings.pullFolder = v.trim();
+            await this.plugin.saveSettings();
+          }),
+      );
+
+    new Setting(containerEl)
       .setName("Test connection")
       .setDesc("Performs a GET q=config request against the endpoint.")
       .addButton((b) =>
@@ -652,11 +912,11 @@ class MicropubSettingTab extends PluginSettingTab {
       cls: "setting-item-description",
     });
     note.setText(
-      "Frontmatter keys: title, slug, categories (list), status (draft|published), published (ISO date), " +
+      "Frontmatter keys: title, slug, summary, categories (list), status (draft|published), published (ISO date), " +
         "in-reply-to / like-of / repost-of / bookmark-of (URL or list of URLs for IndieWeb response posts). " +
         "Embedded images (![[…]] or ![](relative/path)) are uploaded to the media endpoint and rewritten before posting. " +
-        "On success, the new post URL is written back to the note as `url:` in frontmatter.",
+        "On success, the post URL is written back to the note as `url:` in frontmatter. " +
+        "Use \"Pull post from server\" to refresh that note from the server (or pull a new post by URL).",
     );
-    void normalizePath; // keep import for future use
   }
 }
