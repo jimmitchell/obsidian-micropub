@@ -1,5 +1,6 @@
 import {
   App,
+  FuzzySuggestModal,
   Modal,
   Notice,
   Plugin,
@@ -150,6 +151,12 @@ export default class MicropubPlugin extends Plugin {
       id: "micropub-pull",
       name: "Pull post from server (refresh active note or pull by URL)",
       callback: () => this.pullActive(),
+    });
+
+    this.addCommand({
+      id: "micropub-insert-category",
+      name: "Insert category from server",
+      callback: () => this.insertCategory(),
     });
 
     this.addSettingTab(new MicropubSettingTab(this.app, this));
@@ -379,6 +386,91 @@ export default class MicropubPlugin extends Plugin {
       throw new Error("source response missing properties");
     }
     return props as Record<string, unknown[]>;
+  }
+
+  private async fetchCategories(endpoint: string): Promise<string[]> {
+    const res = await requestUrl({
+      url: `${endpoint}?q=category`,
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${this.settings.token}`,
+        Accept: "application/json",
+      },
+      throw: false,
+    });
+    if (res.status < 200 || res.status >= 300) {
+      const detail = this.formatErrorBody(res.text);
+      throw new Error(`HTTP ${res.status}${detail ? ` — ${detail}` : ""}`);
+    }
+    let json: unknown;
+    try {
+      json = JSON.parse(res.text);
+    } catch {
+      throw new Error("category response was not JSON");
+    }
+    const list = (json as { categories?: unknown }).categories;
+    if (!Array.isArray(list)) {
+      throw new Error("category response missing categories");
+    }
+    return list
+      .filter((c): c is string => typeof c === "string")
+      .map((c) => c.trim())
+      .filter((c) => c !== "");
+  }
+
+  private async insertCategory() {
+    const file = this.app.workspace.getActiveFile();
+    if (!file) {
+      new Notice("Micropub: no active note");
+      return;
+    }
+    if (file.extension !== "md") {
+      new Notice("Micropub: active file is not Markdown");
+      return;
+    }
+    const endpoint = this.endpointUrl();
+    if (!endpoint || !this.settings.token) {
+      new Notice("Micropub: set endpoint and token in settings");
+      return;
+    }
+
+    let categories: string[];
+    try {
+      categories = await this.fetchCategories(endpoint);
+    } catch (err) {
+      console.error("Micropub category fetch failed", err);
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Micropub: ${msg}`, 8000);
+      return;
+    }
+    if (categories.length === 0) {
+      new Notice("Micropub: server returned no categories");
+      return;
+    }
+
+    new CategorySuggestModal(this.app, categories, async (chosen) => {
+      try {
+        const raw = await this.app.vault.read(file);
+        const parsed = parseNote(raw);
+        const existing = Array.isArray(parsed.frontmatter.categories)
+          ? parsed.frontmatter.categories.map((c) => String(c))
+          : [];
+        if (existing.some((c) => c.toLowerCase() === chosen.toLowerCase())) {
+          new Notice(`Micropub: "${chosen}" already in categories`);
+          return;
+        }
+        parsed.frontmatter.categories = [...existing, chosen];
+        await this.app.vault.modify(
+          file,
+          writeFrontmatter(raw, parsed.frontmatter),
+        );
+        new Notice(`Added category: ${chosen}`);
+      } catch (err) {
+        console.error("Micropub category insert failed", err);
+        const msg = err instanceof Error ? err.message : String(err);
+        new Notice(`Micropub: ${msg}`, 8000);
+      }
+    }).open();
   }
 
   private async applyPulledSource(
@@ -706,6 +798,29 @@ export default class MicropubPlugin extends Plugin {
       // ignore
     }
     throw new Error("image upload: no Location returned");
+  }
+}
+
+class CategorySuggestModal extends FuzzySuggestModal<string> {
+  constructor(
+    app: App,
+    private items: string[],
+    private onChoose: (item: string) => void,
+  ) {
+    super(app);
+    this.setPlaceholder("Pick a category to add to this note");
+  }
+
+  getItems(): string[] {
+    return this.items;
+  }
+
+  getItemText(item: string): string {
+    return item;
+  }
+
+  onChooseItem(item: string): void {
+    this.onChoose(item);
   }
 }
 
