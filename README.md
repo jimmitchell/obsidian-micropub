@@ -4,6 +4,8 @@ Publish the active Obsidian note to a Micropub-enabled site as an `h-entry`. Emb
 
 Built and tested against [clodd-cms](https://github.com/jimmitchell/clodd-cms)'s `micropub.php`, but should work with any Micropub server that accepts JSON h-entry posts and `multipart/form-data` photo uploads on the same endpoint (or that exposes a separate media endpoint via `q=config` — currently the plugin posts photos to the main endpoint).
 
+**Publishing a note with `status: draft` and no `published:` date needs clodd-cms 1.13.0 or later.** The plugin keeps a post's identity in frontmatter `url:`, taken from the `Location` header the server returns. Before 1.13.0 a dateless draft had no permalink to report, so clodd-cms sent back its admin edit URL; the plugin stored that faithfully, and every later update or delete of the note failed with `404 post not found for url`. Against an older server, give a draft a `published:` date before its first publish and the round-trip works.
+
 ## Install (dev / sideload)
 
 ```sh
