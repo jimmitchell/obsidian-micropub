@@ -73,6 +73,37 @@ in-reply-to: https://example.com/their-post
 
 On the wire these become `properties.in-reply-to` (etc.) on create, and are also included in `replace` on update if still present in frontmatter.
 
+### RSVP posts
+
+An RSVP is a reply to an event plus your answer. Put the event in `in-reply-to:` and the answer in `rsvp:`. The answer must be `yes`, `no`, `maybe` or `interested`:
+
+```yaml
+---
+in-reply-to: https://example.com/the-event
+rsvp: yes
+---
+See you there.
+```
+
+The plugin refuses to publish an `rsvp:` with any other value, or one with no `in-reply-to:`, before uploading anything. The server would refuse both anyway.
+
+### Photo posts
+
+Set `photo: true` to send the note's images as the post's photos, the way a photo app does, instead of inlining them into the text:
+
+```yaml
+---
+photo: true
+---
+![[sunset.jpg|The sun going down over the bay]]
+
+What a night.
+```
+
+Every image in the note is taken out of the body and sent, in order, as the Micropub `photo` property. Local images are uploaded first; images already at a web address are sent as they are. Whatever text is left over is the caption. Alt text comes from `![alt](…)` or from the label in `![[file.jpg|alt]]`. A label that is only a display size, like `|300`, is not treated as alt text. A note with `photo: true` and no images is refused.
+
+The type is decided when the post is created: a titleless note with photos becomes a photo post on clodd-cms. On update, `photo: true` replaces the post's photo list but doesn't change what kind of post it is.
+
 On success, the response `Location` URL is written back to the note as `url:` in frontmatter.
 
 ## Media upload cache
@@ -86,9 +117,10 @@ The cache lives in plugin settings and persists across Obsidian restarts. Manage
 
 A file is considered "changed" if its size or mtime differs from the cached values; editing an image in place will trigger a fresh upload.
 
-## Limitations (v0.7)
+## Limitations (v0.8)
 
 - IndieAuth flow is not supported — only static bearer tokens.
 - Photos are posted to the main endpoint as `photo[]`. If your server exposes a distinct `media-endpoint` via `q=config`, the plugin doesn't yet route to it.
 - Update payloads use `replace` for all surfaced properties (whole-property overwrite); the only `delete` op the plugin emits is clearing `summary` when the frontmatter key is absent. Per-property `add` isn't exposed.
-- "Pull post from server" overwrites the active note's body and any server-managed frontmatter keys (title, slug, summary, categories, status, published, url) without confirmation. Frontmatter keys the server doesn't track (e.g. `in-reply-to`) are preserved.
+- "Pull post from server" overwrites the active note's body and any server-managed frontmatter keys (title, slug, summary, categories, status, published, url, in-reply-to, like-of, repost-of, bookmark-of, rsvp, photo) without confirmation. Frontmatter keys the server doesn't track are preserved. A photo post's images are written back into the body as `![alt](url)` with `photo: true`, so publishing it again sends them back as photos.
+- `photo: true` sets the post type on create only; see [Photo posts](#photo-posts).

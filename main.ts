@@ -46,6 +46,8 @@ interface Frontmatter {
   "like-of"?: string | string[];
   "repost-of"?: string | string[];
   "bookmark-of"?: string | string[];
+  rsvp?: string;
+  photo?: boolean;
   [key: string]: unknown;
 }
 
@@ -61,6 +63,35 @@ const RESPONSE_PROPS = [
   "repost-of",
   "bookmark-of",
 ] as const;
+
+/** The answers Micropub's `rsvp` property takes. */
+const RSVP_VALUES = ["yes", "no", "maybe", "interested"] as const;
+
+/**
+ * The frontmatter `rsvp:` value, normalised, or null when there is none.
+ * Throws on a value outside RSVP_VALUES, or on an rsvp with no in-reply-to:
+ * the server refuses both, and saying so here comes before any image upload.
+ */
+function rsvpFrom(fm: Frontmatter): string | null {
+  const raw = fm.rsvp;
+  if (raw === undefined || raw === null || String(raw).trim() === "") return null;
+  // YAML reads a bare `yes`/`no` as a string, but some editors write booleans.
+  const value =
+    typeof raw === "boolean" ? (raw ? "yes" : "no") : String(raw).trim().toLowerCase();
+  if (!(RSVP_VALUES as readonly string[]).includes(value)) {
+    throw new Error(`rsvp must be one of: ${RSVP_VALUES.join(", ")}`);
+  }
+  if (asUrlList(fm["in-reply-to"]).length === 0) {
+    throw new Error("rsvp needs in-reply-to: naming the event");
+  }
+  return value;
+}
+
+/** A Micropub `photo` value with its alt text. */
+interface PhotoValue {
+  value: string;
+  alt: string;
+}
 
 function asUrlList(v: unknown): string[] {
   if (typeof v === "string") {
@@ -113,6 +144,30 @@ function writeFrontmatter(raw: string, fm: Frontmatter): string {
 
 const EMBED_REGEX = /!\[\[([^\]|]+?)(?:\|[^\]]*)?\]\]/g;
 const MD_IMAGE_REGEX = /!\[[^\]]*\]\(([^)\s]+)\)/g;
+
+/** `photo` values from q=source: bare URLs or {value, alt} objects. */
+function photoValues(v: unknown): PhotoValue[] {
+  if (!Array.isArray(v)) return [];
+  const out: PhotoValue[] = [];
+  for (const item of v) {
+    if (typeof item === "string" && item.trim() !== "") {
+      out.push({ value: item.trim(), alt: "" });
+    } else if (item && typeof item === "object") {
+      const o = item as { value?: unknown; alt?: unknown };
+      if (typeof o.value === "string" && o.value.trim() !== "") {
+        out.push({
+          value: o.value.trim(),
+          alt: typeof o.alt === "string" ? o.alt : "",
+        });
+      }
+    }
+  }
+  return out;
+}
+
+/** Matches either image syntax, in document order. */
+const ANY_IMAGE_REGEX =
+  /!\[\[([^\]|]+?)(?:\|([^\]]*))?\]\]|!\[([^\]]*)\]\(([^)\s]+)\)/g;
 
 function isLocalPath(p: string): boolean {
   return !/^[a-z][a-z0-9+.-]*:/i.test(p) && !p.startsWith("//");
@@ -209,9 +264,18 @@ export default class MicropubPlugin extends Plugin {
     const raw = await this.app.vault.read(file);
     const parsed = parseNote(raw);
     const fm = parsed.frontmatter;
+    const rsvp = rsvpFrom(fm);
+    const isPhotoPost = fm.photo === true;
 
+    // A photo post's images are the post's `photo` property rather than part
+    // of its text, so they come out of the body and the words left over are
+    // the caption.
     new Notice("Micropub: uploading images…");
-    const body = await this.rewriteEmbeds(parsed.body, file, endpoint);
+    const photos: PhotoValue[] | null = isPhotoPost ? [] : null;
+    const body = await this.rewriteEmbeds(parsed.body, file, endpoint, photos);
+    if (photos !== null && photos.length === 0) {
+      throw new Error("photo: true but the note has no images");
+    }
 
     const isUpdate = typeof fm.url === "string" && fm.url.trim() !== "";
 
@@ -240,6 +304,8 @@ export default class MicropubPlugin extends Plugin {
         const urls = asUrlList(fm[prop]);
         if (urls.length > 0) replace[prop] = urls;
       }
+      if (rsvp !== null) replace.rsvp = [rsvp];
+      if (photos !== null) replace.photo = photos;
       const deletes: string[] = [];
       if (summary !== "") {
         replace.summary = [summary];
@@ -266,6 +332,8 @@ export default class MicropubPlugin extends Plugin {
         const urls = asUrlList(fm[prop]);
         if (urls.length > 0) properties[prop] = urls;
       }
+      if (rsvp !== null) properties.rsvp = [rsvp];
+      if (photos !== null) properties.photo = photos;
       payload = { type: ["h-entry"], properties };
     }
 
@@ -511,10 +579,37 @@ export default class MicropubPlugin extends Plugin {
       delete newFm.categories;
     }
 
+    // Response targets: one URL is written as a plain string, as it would
+    // be typed; several as a list.
+    for (const prop of RESPONSE_PROPS) {
+      const urls = asUrlList(props[prop]);
+      if (urls.length === 1) newFm[prop] = urls[0];
+      else if (urls.length > 1) newFm[prop] = urls;
+      else delete newFm[prop];
+    }
+
+    const rsvp = firstString(props.rsvp);
+    if (rsvp !== undefined && rsvp !== "") newFm.rsvp = rsvp;
+    else delete newFm.rsvp;
+
     const serverUrl = firstString(props.url);
     newFm.url = serverUrl && serverUrl !== "" ? serverUrl : fallbackUrl;
 
-    const body = firstString(props.content) ?? "";
+    let body = firstString(props.content) ?? "";
+
+    // The server holds a photo post's images apart from its text. Put them
+    // back into the note as images so the next publish sends them again as
+    // the photo property — leaving them out would replace it with nothing.
+    const pulledPhotos = photoValues(props.photo);
+    if (pulledPhotos.length > 0) {
+      newFm.photo = true;
+      const images = pulledPhotos
+        .map((p) => `![${p.alt.replace(/[\[\]]/g, "")}](${p.value})`)
+        .join("\n\n");
+      body = body.trim() === "" ? `${images}\n` : `${images}\n\n${body}`;
+    } else {
+      delete newFm.photo;
+    }
     const yaml = stringifyYaml(newFm).trimEnd();
     const content = `---\n${yaml}\n---\n${body}`;
 
@@ -638,10 +733,18 @@ export default class MicropubPlugin extends Plugin {
     return basenameNoExt;
   }
 
+  /**
+   * Uploads the note's local images and rewrites them to their URLs.
+   *
+   * Pass `photos` for a photo post: every image — uploaded, or already a web
+   * URL — is then taken out of the body and appended to it instead, in
+   * document order, and the body that comes back is only the words.
+   */
   private async rewriteEmbeds(
     body: string,
     sourceFile: TFile,
     endpoint: string,
+    photos: PhotoValue[] | null = null,
   ): Promise<string> {
     const cache = new Map<string, string>();
     const uploadedUrls = new Set<string>();
@@ -705,6 +808,42 @@ export default class MicropubPlugin extends Plugin {
       return url;
     };
 
+    const refuseSkipped = () => {
+      if (skipped.length === 0) return;
+      const list = skipped
+        .map((s) => `  • ${s.linktext} — ${s.reason}`)
+        .join("\n");
+      throw new Error(
+        `${skipped.length} image embed${skipped.length === 1 ? "" : "s"} could not be uploaded — refusing to publish:\n${list}`,
+      );
+    };
+
+    if (photos !== null) {
+      body = await this.replaceAsync(
+        body,
+        ANY_IMAGE_REGEX,
+        async (full, wikiPath, wikiLabel, mdAlt, mdSrc) => {
+          let url: string | null;
+          let alt: string;
+          if (wikiPath !== undefined) {
+            url = await uploadByPath(wikiPath.trim());
+            // `![[img.png|300]]` is a display width, not a description.
+            const label = (wikiLabel ?? "").trim();
+            alt = /^\d+(x\d+)?$/.test(label) ? "" : label;
+          } else {
+            url = isLocalPath(mdSrc) ? await uploadByPath(mdSrc) : mdSrc;
+            alt = (mdAlt ?? "").trim();
+          }
+          // A failed upload is in `skipped`, and refused below.
+          if (url === null) return full;
+          if (!photos.some((p) => p.value === url)) photos.push({ value: url, alt });
+          return "";
+        },
+      );
+      refuseSkipped();
+      return body.replace(/\n{3,}/g, "\n\n").trim();
+    }
+
     // Replace ![[wiki embeds]]
     const embedReplacements: Array<{ match: string; url: string; alt: string }> = [];
     for (const m of body.matchAll(EMBED_REGEX)) {
@@ -726,15 +865,7 @@ export default class MicropubPlugin extends Plugin {
       return url ? full.replace(src, url) : full;
     });
 
-    if (skipped.length > 0) {
-      const list = skipped
-        .map((s) => `  • ${s.linktext} — ${s.reason}`)
-        .join("\n");
-      throw new Error(
-        `${skipped.length} image embed${skipped.length === 1 ? "" : "s"} could not be uploaded — refusing to publish:\n${list}`,
-      );
-    }
-
+    refuseSkipped();
     return body;
   }
 
@@ -1028,7 +1159,9 @@ class MicropubSettingTab extends PluginSettingTab {
     });
     note.setText(
       "Frontmatter keys: title, slug, summary, categories (list), status (draft|published), published (ISO date), " +
-        "in-reply-to / like-of / repost-of / bookmark-of (URL or list of URLs for IndieWeb response posts). " +
+        "in-reply-to / like-of / repost-of / bookmark-of (URL or list of URLs for IndieWeb response posts), " +
+        "rsvp (yes|no|maybe|interested, with in-reply-to naming the event), " +
+        "photo (true sends the note's images as the post's photos, with the remaining text as the caption). " +
         "Embedded images (![[…]] or ![](relative/path)) are uploaded to the media endpoint and rewritten before posting. " +
         "On success, the post URL is written back to the note as `url:` in frontmatter. " +
         "Use \"Pull post from server\" to refresh that note from the server (or pull a new post by URL).",
